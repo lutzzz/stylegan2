@@ -40,6 +40,7 @@ class TFRecordExporter:
         self.tfr_writers        = []
         self.print_progress     = print_progress
         self.progress_interval  = progress_interval
+        self.resize             = True
 
         if self.print_progress:
             print('Creating dataset "%s"' % tfrecord_dir)
@@ -72,7 +73,7 @@ class TFRecordExporter:
             assert self.shape[1] == self.shape[2]
             assert self.shape[1] == 2**self.resolution_log2
             tfr_opt = tf.python_io.TFRecordOptions(tf.python_io.TFRecordCompressionType.NONE)
-            for lod in range(self.resolution_log2 - 1):
+            for lod in range(self.resolution_log2 - 1) if self.resize else [0]:
                 tfr_file = self.tfr_prefix + '-r%02d.tfrecords' % (self.resolution_log2 - lod)
                 self.tfr_writers.append(tf.python_io.TFRecordWriter(tfr_file, tfr_opt))
         assert img.shape == self.shape
@@ -499,7 +500,7 @@ def create_celeba(tfrecord_dir, celeba_dir, cx=89, cy=121):
 
 #----------------------------------------------------------------------------
 
-def create_from_images(tfrecord_dir, image_dir, shuffle):
+def create_from_images(tfrecord_dir, image_dir, shuffle, resize):
     print('Loading images from "%s"' % image_dir)
     image_filenames = sorted(glob.glob(os.path.join(image_dir, '*')))
     if len(image_filenames) == 0:
@@ -517,6 +518,7 @@ def create_from_images(tfrecord_dir, image_dir, shuffle):
 
     with TFRecordExporter(tfrecord_dir, len(image_filenames)) as tfr:
         order = tfr.choose_shuffled_order() if shuffle else np.arange(len(image_filenames))
+        tfr.resize = resize
         for idx in range(order.size):
             img = np.asarray(PIL.Image.open(image_filenames[order[idx]]))
             if channels == 1:
@@ -624,6 +626,7 @@ def execute_cmdline(argv):
     p.add_argument(     'tfrecord_dir',     help='New dataset directory to be created')
     p.add_argument(     'image_dir',        help='Directory containing the images')
     p.add_argument(     '--shuffle',        help='Randomize image order (default: 1)', type=int, default=1)
+    p.add_argument(     '--resize',         help='Save full image resolution pyramid (default: 1)', type=int, default=1)
 
     p = add_command(    'create_from_hdf5', 'Create dataset from legacy HDF5 archive.',
                                             'create_from_hdf5 datasets/celebahq ~/downloads/celeba-hq-1024x1024.h5')
