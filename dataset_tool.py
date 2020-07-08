@@ -500,7 +500,7 @@ def create_celeba(tfrecord_dir, celeba_dir, cx=89, cy=121):
 
 #----------------------------------------------------------------------------
 
-def create_from_images(tfrecord_dir, image_dir, shuffle, resize):
+def create_from_images(tfrecord_dir, image_dir, shuffle, resize, filename_labels):
     print('Loading images from "%s"' % image_dir)
     image_filenames = sorted(glob.glob(os.path.join(image_dir, '*')))
     if len(image_filenames) == 0:
@@ -515,6 +515,12 @@ def create_from_images(tfrecord_dir, image_dir, shuffle, resize):
         error('Input image resolution must be a power-of-two')
     if channels not in [1, 3]:
         error('Input images must be stored as RGB or grayscale')
+    if filename_labels: # e.g., 'seed10100.png'
+        def label(name):
+            lbl = os.path.splitext(os.path.basename(name))[0][4:] # remove 'seed'
+            assert lbl.isnumeric
+            return int(lbl)
+        labels = np.asarray([label(name) for name in image_filenames])[:,None]
 
     with TFRecordExporter(tfrecord_dir, len(image_filenames)) as tfr:
         order = tfr.choose_shuffled_order() if shuffle else np.arange(len(image_filenames))
@@ -526,6 +532,8 @@ def create_from_images(tfrecord_dir, image_dir, shuffle, resize):
             else:
                 img = img.transpose([2, 0, 1]) # HWC => CHW
             tfr.add_image(img)
+        if filename_labels:
+            tfr.add_labels(labels[order])
 
 #----------------------------------------------------------------------------
 
@@ -627,6 +635,7 @@ def execute_cmdline(argv):
     p.add_argument(     'image_dir',        help='Directory containing the images')
     p.add_argument(     '--shuffle',        help='Randomize image order (default: 1)', type=int, default=1)
     p.add_argument(     '--resize',         help='Save full image resolution pyramid (default: 1)', type=int, default=1)
+    p.add_argument(     '--filename_labels',help='Use label from StyleGAN filename e.g., seed10100.png (default: 0)', type=int, default=0)
 
     p = add_command(    'create_from_hdf5', 'Create dataset from legacy HDF5 archive.',
                                             'create_from_hdf5 datasets/celebahq ~/downloads/celeba-hq-1024x1024.h5')
