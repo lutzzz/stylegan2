@@ -2,3 +2,6 @@
 __pycache__
 .vscode
 data
+misc
+results/*
+dnnlib/tflib/_cudacache
