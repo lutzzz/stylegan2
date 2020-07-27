@@ -195,3 +195,14 @@ def G_logistic_ns_pathreg(G, D, opt, training_set, minibatch_size, pl_minibatch_
     return loss, reg
 
 #----------------------------------------------------------------------------
+# Simple MSE loss for generator training (only) with known (seed, image) pairs
+
+def G_reconstruction(G, D, opt, training_set, minibatch_size, reals, labels):
+    _ = D, opt
+    latents = labels # [minibatch, component]
+    labels = training_set.get_random_labels_tf(minibatch_size) # conditioning labels not used
+    fake_images_out = G.get_output_for(latents, labels, is_training=True) # this is without activation in ~[-1, 1]
+    loss = tf.square(reals - fake_images_out) 
+    return loss, None
+
+#----------------------------------------------------------------------------
