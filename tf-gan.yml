@@ -1,0 +1,21 @@
+name: tf-gan
+channels:
+  - defaults
+dependencies:
+  - python=3.7
+  - tensorflow-gpu=1.14
+  - pillow=7
+  - matplotlib=3
+  - scipy
+  # - pandas=1
+  # - xlrd>=1
+  - numpy=1.18
+  - scikit-learn=0.22
+  # - cudatoolkit=10.1
+  # - cudnn=7.6
+  - requests
+  - pylint
+  - pip
+  - pip:
+  #  - cleverhans>=3.0.1 # deprecated (Nov 2018)
+     - git+https://github.com/tensorflow/cleverhans.git#egg=cleverhans
