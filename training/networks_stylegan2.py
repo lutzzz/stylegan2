@@ -253,6 +253,7 @@ def G_mapping(
     labels_in,                              # Second input: Conditioning labels [minibatch, label_size].
     latent_size             = 512,          # Latent vector (Z) dimensionality.
     label_size              = 0,            # Label dimensionality, 0 if no labels.
+    conditional_labels      = True,         # Use as conditional labels, otherwise ignore
     dlatent_size            = 512,          # Disentangled latent (W) dimensionality.
     dlatent_broadcast       = None,         # Output disentangled latent (W) as [minibatch, dlatent_size] or [minibatch, dlatent_broadcast, dlatent_size].
     mapping_layers          = 8,            # Number of mapping layers.
@@ -273,7 +274,7 @@ def G_mapping(
     x = latents_in
 
     # Embed labels and concatenate them with latents.
-    if label_size:
+    if label_size and conditional_labels:
         with tf.variable_scope('LabelConcat'):
             w = tf.get_variable('weight', shape=[label_size, latent_size], initializer=tf.initializers.random_normal())
             y = tf.matmul(labels_in, tf.cast(w, dtype))
