@@ -24,6 +24,7 @@ _valid_configs = [
     'config-d', # + Path length regularization
     'config-e', # + No growing, new G & D arch.
     'config-f', # + Large networks (default)
+    'config-l', # Only generator network for refinement
 
     # Table 2
     'config-e-Gorig-Dorig',   'config-e-Gorig-Dresnet',   'config-e-Gorig-Dskip',
@@ -68,8 +69,34 @@ def run(dataset, data_dir, result_dir, config_id, num_gpus, total_kimg, gamma, m
     desc += '-' + config_id
 
     # Configs A-E: Shrink networks to match original StyleGAN.
-    if config_id != 'config-f':
+    if config_id not in ['config-f', 'config-l']:
         G.fmap_base = D.fmap_base = 8 << 10
+
+    # Config L: Generator training only
+    if config_id == 'config-l':
+        # Use labels as latent vector input
+        dataset_args.max_label_size="full"
+        # Deactivate methods specific for GAN training
+        G.truncation_psi = None
+        G.randomize_noise = False
+        G.style_mixing_prob = None
+        G.dlatent_avg_beta = None
+        G.conditional_labels = False
+        # Refinement training
+        G_loss.func_name = 'training.loss.G_reconstruction'
+        train.run_func_name = 'training.training_loop.training_loop_refinement'
+        # Network for refinement
+        train.resume_pkl = "nets/stylegan2-ffhq-config-f.pkl" # TODO init net
+        train.resume_with_new_nets = True
+        # Maintenance tasks
+        sched.tick_kimg_base            = 5 # 1 tick = 5000 images (metric update)
+        sched.tick_kimg_dict            = {}
+        train.image_snapshot_ticks      = 2 # Save every 10000 images
+        train.network_snapshot_ticks    = 2 # Save every 10000 images
+        # Training parameters
+        sched.G_lrate_base = 2e-6
+        train.G_smoothing_kimg = 1.0
+        sched.minibatch_size_base = sched.minibatch_gpu_base * num_gpus # 4 per GPU
 
     # Config E: Set gamma to 100 and override G & D architecture.
     if config_id.startswith('config-e'):
