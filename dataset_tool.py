@@ -635,7 +635,7 @@ def execute_cmdline(argv):
     p.add_argument(     '--shuffle',        help='Randomize image order (default: 1)', type=int, default=1)
     p.add_argument(     '--resize',         help='Save full image resolution pyramid (default: 1)', type=int, default=1)
     p.add_argument(     '--filename_labels',help='Use numeric seed from filename e.g., seed10100.png (default: 0)', type=int, default=0)
-    p.add_argument(     '--latent_size',    help='Provide latent size generator input for filename labels', type=int, default=512)
+    p.add_argument(     '--latent_size',    help='Provide latent size generator input for filename labels (default: 512)', type=int, default=512)
 
     p = add_command(    'create_from_hdf5', 'Create dataset from legacy HDF5 archive.',
                                             'create_from_hdf5 datasets/celebahq ~/downloads/celeba-hq-1024x1024.h5')
