@@ -22,7 +22,7 @@ class DCTFS(metric_base.MetricBase):
         minibatch_size = num_gpus * self.minibatch_per_gpu
         classifier = tf.keras.models.load_model('nets/lutz_new_classifier_tf1.14.h5', compile=False)
         classifier = add_preprocessing(classifier, "nets")
-        if num_gpus > 1: classifier = tf.keras.utils.multi_gpu_model(classifier, num_gpus, cpu_relocation=True)
+        # if num_gpus > 1: classifier = tf.keras.utils.multi_gpu_model(classifier, num_gpus, cpu_relocation=True) # Runs with undeterministic output
         activations = np.zeros([self.num_images, classifier.output_shape[1]], dtype=np.float32)
 
         # Calculate statistics for reals (adversarial examples).
