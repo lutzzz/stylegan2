@@ -63,7 +63,7 @@ class PreprocessImages(tf.keras.layers.Layer):
     def __init__(self, maxima=None, mean=None, var=None, **kwargs):
         kwargs["dtype"] = "float64"
         super(PreprocessImages, self).__init__(**kwargs)
-        assert all(isinstance(arg, (np.ndarray, None)) for arg in (maxima, mean, var))
+        assert all(arg is None or isinstance(arg, np.ndarray) for arg in (maxima, mean, var))
         self.scale = maxima is not None
         self.norm = mean is not None or var is not None
 
