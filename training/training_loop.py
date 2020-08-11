@@ -127,7 +127,7 @@ def training_loop_refinement(
     image_snapshot_ticks    = 50,       # How often to save image snapshots? None = only save 'reals.png' and 'fakes-init.png'.
     network_snapshot_ticks  = 50,       # How often to save network snapshots? None = only save 'networks-final.pkl'.
     save_tf_graph           = False,    # Include full TensorFlow computation graph in the tfevents file?
-    save_weight_histograms  = False,    # Include weight histograms in the tfevents file?
+    save_weight_histograms  = True,    # Include weight histograms in the tfevents file?
     resume_pkl              = None,     # Network pickle to resume training from, None = train from scratch.
     resume_kimg             = 0.0,      # Assumed training progress at the beginning. Affects reporting and training schedule.
     resume_time             = 0.0,      # Assumed wallclock time at the beginning. Affects reporting.
@@ -150,9 +150,33 @@ def training_loop_refinement(
             Gs = G.clone('Gs')
         if resume_pkl is not None:
             print('Loading networks from "%s"...' % resume_pkl)
-            rG, _rD, rGs = misc.load_pkl(resume_pkl); del _rD
-            if resume_with_new_nets: G.copy_vars_from(rG); Gs.copy_vars_from(rGs); del rG, rGs
+            _rG, _rD, rGs = misc.load_pkl(resume_pkl); del _rD, _rG
+            if resume_with_new_nets: G.copy_vars_from(rGs); Gs.copy_vars_from(rGs); del rGs
             else: G = rG; Gs = rGs
+
+    # Set constant noise input for both G and Gs
+    if G_args.get("randomize_noise", None) == False:
+        noise_vars = [var for name, var in G.components.synthesis.vars.items() if name.startswith('noise')]
+        rnd = np.random.RandomState(123)
+        tflib.set_vars({var: rnd.randn(*var.shape.as_list()) for var in noise_vars}) # [height, width]
+
+        noise_vars = [var for name, var in Gs.components.synthesis.vars.items() if name.startswith('noise')]
+        rnd = np.random.RandomState(123)
+        tflib.set_vars({var: rnd.randn(*var.shape.as_list()) for var in noise_vars}) # [height, width]
+
+    # TESTS
+    # from PIL import Image
+    # reals, latents = training_set.get_minibatch_np(4)
+    # reals = np.transpose(reals, [0, 2, 3, 1])
+    # Image.fromarray(reals[0], 'RGB').save("test_reals.png")
+
+    # labels = training_set.get_random_labels_np(4)
+    # Gs_kwargs = dnnlib.EasyDict()
+    # Gs_kwargs.output_transform = dict(func=tflib.convert_images_to_uint8, nchw_to_nhwc=True)
+    # fakes = Gs.run(latents, labels, minibatch_size=4, **Gs_kwargs)
+    # Image.fromarray(fakes[0], 'RGB').save("test_fakes_Gs_new.png")
+    # fakes = G.run(latents, labels, minibatch_size=4, **Gs_kwargs)
+    # Image.fromarray(fakes[0], 'RGB').save("test_fakes_G_new.png")
 
     # Print layers and generate initial image snapshot.
     G.print_layers()
@@ -171,12 +195,6 @@ def training_loop_refinement(
         minibatch_multiplier = minibatch_size_in // (minibatch_gpu_in * num_gpus)
         Gs_beta              = 0.5 ** tf.div(tf.cast(minibatch_size_in, tf.float32), G_smoothing_kimg * 1000.0) if G_smoothing_kimg > 0.0 else 0.0
     
-    # Set constant noise input
-    if G_args.get("randomize_noise", None) == False:
-        noise_vars = [var for name, var in G.components.synthesis.vars.items() if name.startswith('noise')]
-        rnd = np.random.RandomState(123)
-        tflib.set_vars({var: rnd.randn(*var.shape.as_list()) for var in noise_vars}) # [height, width]
-
     # Setup optimizers.
     G_opt_args = dict(G_opt_args)
     for args, reg_interval in [(G_opt_args, G_reg_interval)]:
@@ -189,6 +207,13 @@ def training_loop_refinement(
             if 'beta2' in args: args['beta2'] **= mb_ratio
     G_opt = tflib.Optimizer(name='TrainG', **G_opt_args)
     G_reg_opt = tflib.Optimizer(name='RegG', share=G_opt, **G_opt_args)
+
+    # Freeze layers
+    if G_args.get("freeze_layers", None) is not None:
+        for name in list(G.trainables.keys()):
+            if any(layer in name for layer in G_args.freeze_layers):
+                del G.trainables[name]
+                print(f"Freezed {name}")
 
     # Build training graph for each GPU.
     data_fetch_ops = []
@@ -256,6 +281,7 @@ def training_loop_refinement(
     tick_start_nimg = cur_nimg
     prev_lod = -1.0
     running_mb_counter = 0
+    loss_per_batch_sum = 0
     while cur_nimg < total_kimg * 1000:
         if dnnlib.RunContext.get().should_stop(): break
 
@@ -270,6 +296,7 @@ def training_loop_refinement(
 
         # Run training ops.
         feed_dict = {lod_in: sched.lod, lrate_in: sched.G_lrate, minibatch_size_in: sched.minibatch_size, minibatch_gpu_in: sched.minibatch_gpu}
+        tflib.run(data_fetch_op, feed_dict)
         for _repeat in range(minibatch_repeats):
             rounds = range(0, sched.minibatch_size, sched.minibatch_gpu * num_gpus)
             run_G_reg = (lazy_regularization and running_mb_counter % G_reg_interval == 0)
@@ -278,21 +305,40 @@ def training_loop_refinement(
 
             # Fast path without gradient accumulation.
             if len(rounds) == 1:
-                tflib.run([G_train_op, data_fetch_op], feed_dict)
+                loss, _, _ = tflib.run([G_loss, G_train_op, data_fetch_op], feed_dict)
+                # (loss, reals, fakes), _ = tflib.run([G_loss, data_fetch_op], feed_dict)
+                # print(f"loss_tf  {np.mean(loss)}")
+                # print(f"loss_np  {np.mean(np.square(reals - fakes))}")
+                # print(f"loss_abs {np.mean(np.abs(reals - fakes))}")
+
+                loss_per_batch_sum += np.mean(loss)
+                # reals = np.transpose(reals, [0, 2, 3, 1])
+                # fakes = np.transpose(fakes, [0, 2, 3, 1])
+                # for idx, (fake, real) in enumerate(zip(fakes, reals)):
+                #     fake -= fake.min()
+                #     fake /= fake.max()
+                #     fake *= 255
+                #     fake = fake.astype(np.uint8)
+                #     Image.fromarray(fake, 'RGB').save(f"fake_loss_{idx}.png")
+                #     real -= real.min()
+                #     real /= real.max()
+                #     real *= 255
+                #     real = real.astype(np.uint8)
+                #     Image.fromarray(real, 'RGB').save(f"real_loss_{idx}.png")
+                # diff = out[0] - out[1]
+                # minmax = (diff.min(), diff.max())
                 if run_G_reg:
                     tflib.run(G_reg_op, feed_dict)
                 tflib.run([Gs_update_op], feed_dict)
 
-            # Slow path with gradient accumulation.
+            # Slow path with gradient accumulation. FIXME: Probably wrong
             else:
                 for _round in rounds:
-                    tflib.run(G_train_op, feed_dict)
-                if run_G_reg:
-                    for _round in rounds:
+                    loss, _, _ = tflib.run([G_loss, G_train_op, data_fetch_op], feed_dict)
+                    loss_per_batch_sum += np.mean(loss)/len(rounds)
+                    if run_G_reg:
                         tflib.run(G_reg_op, feed_dict)
                 tflib.run(Gs_update_op, feed_dict)
-                for _round in rounds:
-                    tflib.run(data_fetch_op, feed_dict)
 
         # Perform maintenance tasks once per tick.
         done = (cur_nimg >= total_kimg * 1000)
@@ -302,13 +348,15 @@ def training_loop_refinement(
             tick_start_nimg = cur_nimg
             tick_time = dnnlib.RunContext.get().get_time_since_last_update()
             total_time = dnnlib.RunContext.get().get_time_since_start() + resume_time
+            tick_loss = loss_per_batch_sum * sched.minibatch_size / (tick_kimg * 1000); loss_per_batch_sum = 0
 
             # Report progress.
-            print('tick %-5d kimg %-8.1f lod %-5.2f minibatch %-4d time %-12s sec/tick %-7.1f sec/kimg %-7.2f maintenance %-6.1f gpumem %.1f' % (
+            print('tick %-5d kimg %-8.1f lod %-5.2f minibatch %-4d loss/img %-2.6f time %-12s sec/tick %-7.1f sec/kimg %-7.2f maintenance %-6.1f gpumem %.1f' % (
                 autosummary('Progress/tick', cur_tick),
                 autosummary('Progress/kimg', cur_nimg / 1000.0),
                 autosummary('Progress/lod', sched.lod),
                 autosummary('Progress/minibatch', sched.minibatch_size),
+                tick_loss,
                 dnnlib.util.format_time(autosummary('Timing/total_sec', total_time)),
                 autosummary('Timing/sec_per_tick', tick_time),
                 autosummary('Timing/sec_per_kimg', tick_time / tick_kimg),
