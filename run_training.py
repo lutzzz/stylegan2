@@ -95,7 +95,7 @@ def run(dataset, data_dir, result_dir, config_id, num_gpus, total_kimg, gamma, m
         train.image_snapshot_ticks      = 5  # Save every 5000 images
         train.network_snapshot_ticks    = 10 # Save every 10000 images
         # Training parameters
-        sched.G_lrate_base = 1e-5
+        sched.G_lrate_base = 1e-6
         train.G_smoothing_kimg = 0.0
         sched.minibatch_size_base = sched.minibatch_gpu_base * num_gpus # 4 per GPU
 
