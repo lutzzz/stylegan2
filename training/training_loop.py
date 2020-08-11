@@ -209,19 +209,23 @@ def training_loop_refinement(
     G_reg_opt = tflib.Optimizer(name='RegG', share=G_opt, **G_opt_args)
 
     # Freeze layers
-    if G_args.get("freeze_layers", None) is not None:
-        for name in list(G.trainables.keys()):
+    def freeze_vars(gen, verbose=True):
+        assert G_args.get("freeze_layers", None) is not None
+        for name in list(gen.trainables.keys()):
             if any(layer in name for layer in G_args.freeze_layers):
-                del G.trainables[name]
-                print(f"Freezed {name}")
+                del gen.trainables[name]
+                if verbose: print(f"Freezed {name}")
+    if G_args.get("freeze_layers", None) is not None: freeze_vars(G)
 
     # Build training graph for each GPU.
     data_fetch_ops = []
+    loss_ops = []
     for gpu in range(num_gpus):
         with tf.name_scope('GPU%d' % gpu), tf.device('/gpu:%d' % gpu):
 
             # Create GPU-specific shadow copies of G and D.
             G_gpu = G if gpu == 0 else G.clone(G.name + '_shadow')
+            if gpu != 0 and G_args.get("freeze_layers", None) is not None: freeze_vars(G_gpu, verbose=False)
 
             # Fetch training data via temporary variables.
             with tf.name_scope('DataFetch'):
@@ -243,6 +247,7 @@ def training_loop_refinement(
             with tf.control_dependencies(lod_assign_ops):
                 with tf.name_scope('G_loss'):
                     G_loss, G_reg = dnnlib.util.call_func_by_name(G=G_gpu, D=None, opt=G_opt, training_set=training_set, minibatch_size=minibatch_gpu_in, reals=reals_read, labels=labels_read, **G_loss_args)
+                    loss_ops.append(G_loss)
 
             # Register gradients.
             if not lazy_regularization:
@@ -253,6 +258,7 @@ def training_loop_refinement(
 
     # Setup training ops.
     data_fetch_op = tf.group(*data_fetch_ops)
+    loss_op = tf.reduce_mean(tf.concat(loss_ops, axis=0))
     G_train_op = G_opt.apply_updates()
     G_reg_op = G_reg_opt.apply_updates(allow_no_op=True)
     Gs_update_op = Gs.setup_as_moving_average_of(G, beta=Gs_beta)
@@ -305,13 +311,13 @@ def training_loop_refinement(
 
             # Fast path without gradient accumulation.
             if len(rounds) == 1:
-                loss, _, _ = tflib.run([G_loss, G_train_op, data_fetch_op], feed_dict)
+                loss, _, _ = tflib.run([loss_op, G_train_op, data_fetch_op], feed_dict)
                 # (loss, reals, fakes), _ = tflib.run([G_loss, data_fetch_op], feed_dict)
                 # print(f"loss_tf  {np.mean(loss)}")
                 # print(f"loss_np  {np.mean(np.square(reals - fakes))}")
                 # print(f"loss_abs {np.mean(np.abs(reals - fakes))}")
 
-                loss_per_batch_sum += np.mean(loss)
+                loss_per_batch_sum += loss
                 # reals = np.transpose(reals, [0, 2, 3, 1])
                 # fakes = np.transpose(fakes, [0, 2, 3, 1])
                 # for idx, (fake, real) in enumerate(zip(fakes, reals)):
@@ -334,8 +340,8 @@ def training_loop_refinement(
             # Slow path with gradient accumulation. FIXME: Probably wrong
             else:
                 for _round in rounds:
-                    loss, _, _ = tflib.run([G_loss, G_train_op, data_fetch_op], feed_dict)
-                    loss_per_batch_sum += np.mean(loss)/len(rounds)
+                    loss, _, _ = tflib.run([loss_op, G_train_op, data_fetch_op], feed_dict)
+                    loss_per_batch_sum += loss/len(rounds)
                     if run_G_reg:
                         tflib.run(G_reg_op, feed_dict)
                 tflib.run(Gs_update_op, feed_dict)
@@ -351,7 +357,7 @@ def training_loop_refinement(
             tick_loss = loss_per_batch_sum * sched.minibatch_size / (tick_kimg * 1000); loss_per_batch_sum = 0
 
             # Report progress.
-            print('tick %-5d kimg %-8.1f lod %-5.2f minibatch %-4d loss/img %-2.6f time %-12s sec/tick %-7.1f sec/kimg %-7.2f maintenance %-6.1f gpumem %.1f' % (
+            print('tick %-5d kimg %-8.1f lod %-5.2f minibatch %-4d loss/img %-8.4f time %-12s sec/tick %-7.1f sec/kimg %-7.2f maintenance %-6.1f gpumem %.1f' % (
                 autosummary('Progress/tick', cur_tick),
                 autosummary('Progress/kimg', cur_nimg / 1000.0),
                 autosummary('Progress/lod', sched.lod),
