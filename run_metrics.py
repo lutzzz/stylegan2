@@ -21,7 +21,7 @@ def run(network_pkl, metrics, dataset, data_dir, mirror_augment):
     print('Evaluating metrics "%s" for "%s"...' % (','.join(metrics), network_pkl))
     tflib.init_tf()
     network_pkl = pretrained_networks.get_path_or_url(network_pkl)
-    dataset_args = dnnlib.EasyDict(tfrecord_dir=dataset, shuffle_mb=0)
+    dataset_args = dnnlib.EasyDict(tfrecord_dir=dataset, shuffle_mb=0, max_label_size="full")
     num_gpus = dnnlib.submit_config.num_gpus
     metric_group = metric_base.MetricGroup([metric_defaults[metric] for metric in metrics])
     metric_group.run(network_pkl, data_dir=data_dir, dataset_args=dataset_args, mirror_augment=mirror_augment, num_gpus=num_gpus)
