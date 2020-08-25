@@ -85,7 +85,7 @@ def run(dataset, data_dir, result_dir, config_id, num_gpus, total_kimg, gamma, m
         # Refinement training
         G_loss.func_name = 'training.loss.G_reconstruction'
         train.run_func_name = 'training.training_loop.training_loop_refinement'
-        G.freeze_layers = ["mapping", "noise"]#, "4x4", "8x8", "16x16", "32x32"]
+        # G.freeze_layers = ["mapping", "noise"]#, "4x4", "8x8", "16x16", "32x32"]
         # Network for refinement
         train.resume_pkl = "nets/stylegan2-ffhq-config-f.pkl" # TODO init net
         train.resume_with_new_nets = True
@@ -95,7 +95,7 @@ def run(dataset, data_dir, result_dir, config_id, num_gpus, total_kimg, gamma, m
         train.image_snapshot_ticks      = 5  # Save every 5000 images
         train.network_snapshot_ticks    = 10 # Save every 10000 images
         # Training parameters
-        sched.G_lrate_base = 1e-6
+        sched.G_lrate_base = 1e-4
         train.G_smoothing_kimg = 0.0
         sched.minibatch_size_base = sched.minibatch_gpu_base * num_gpus # 4 per GPU
 

@@ -209,13 +209,13 @@ def training_loop_refinement(
     G_reg_opt = tflib.Optimizer(name='RegG', share=G_opt, **G_opt_args)
 
     # Freeze layers
+    G_args.freeze_layers = list(G_args.get("freeze_layers", []))
     def freeze_vars(gen, verbose=True):
-        assert G_args.get("freeze_layers", None) is not None
+        assert len(G_args.freeze_layers) > 0
         for name in list(gen.trainables.keys()):
             if any(layer in name for layer in G_args.freeze_layers):
                 del gen.trainables[name]
                 if verbose: print(f"Freezed {name}")
-    if G_args.get("freeze_layers", None) is not None: freeze_vars(G)
 
     # Build training graph for each GPU.
     data_fetch_ops = []
@@ -225,7 +225,7 @@ def training_loop_refinement(
 
             # Create GPU-specific shadow copies of G and D.
             G_gpu = G if gpu == 0 else G.clone(G.name + '_shadow')
-            if gpu != 0 and G_args.get("freeze_layers", None) is not None: freeze_vars(G_gpu, verbose=False)
+            if G_args.freeze_layers: freeze_vars(G_gpu, verbose=False)
 
             # Fetch training data via temporary variables.
             with tf.name_scope('DataFetch'):
@@ -246,7 +246,7 @@ def training_loop_refinement(
             if 'lod' in G_gpu.vars: lod_assign_ops += [tf.assign(G_gpu.vars['lod'], lod_in)]
             with tf.control_dependencies(lod_assign_ops):
                 with tf.name_scope('G_loss'):
-                    G_loss, G_reg = dnnlib.util.call_func_by_name(G=G_gpu, D=None, opt=G_opt, training_set=training_set, minibatch_size=minibatch_gpu_in, reals=reals_read, labels=labels_read, **G_loss_args)
+                    G_loss, G_reg = dnnlib.util.call_func_by_name(G=G_gpu, D=None, opt=G_opt, training_set=training_set, minibatch_size=minibatch_gpu_in, reals=reals_read, latents=labels_read, **G_loss_args)
                     loss_ops.append(G_loss)
 
             # Register gradients.
@@ -303,6 +303,11 @@ def training_loop_refinement(
         # Run training ops.
         feed_dict = {lod_in: sched.lod, lrate_in: sched.G_lrate, minibatch_size_in: sched.minibatch_size, minibatch_gpu_in: sched.minibatch_gpu}
         tflib.run(data_fetch_op, feed_dict)
+        ### TEST
+        # fakes = G.get_output_for(labels_read, training_set.get_random_labels_tf(minibatch_gpu_in), is_training=True) # this is without activation in ~[-1.5, 1.5]
+        # fakes = tf.clip_by_value(fakes, drange_net[0], drange_net[1])
+        # reals = reals_read
+        ### TEST
         for _repeat in range(minibatch_repeats):
             rounds = range(0, sched.minibatch_size, sched.minibatch_gpu * num_gpus)
             run_G_reg = (lazy_regularization and running_mb_counter % G_reg_interval == 0)
@@ -311,28 +316,33 @@ def training_loop_refinement(
 
             # Fast path without gradient accumulation.
             if len(rounds) == 1:
-                loss, _, _ = tflib.run([loss_op, G_train_op, data_fetch_op], feed_dict)
-                # (loss, reals, fakes), _ = tflib.run([G_loss, data_fetch_op], feed_dict)
+                loss, _ = tflib.run([loss_op, G_train_op], feed_dict)
+                # (loss, reals, fakes), _ = tflib.run([loss_op, G_train_op], feed_dict)
+                tflib.run([data_fetch_op], feed_dict)
                 # print(f"loss_tf  {np.mean(loss)}")
                 # print(f"loss_np  {np.mean(np.square(reals - fakes))}")
                 # print(f"loss_abs {np.mean(np.abs(reals - fakes))}")
 
                 loss_per_batch_sum += loss
-                # reals = np.transpose(reals, [0, 2, 3, 1])
-                # fakes = np.transpose(fakes, [0, 2, 3, 1])
-                # for idx, (fake, real) in enumerate(zip(fakes, reals)):
-                #     fake -= fake.min()
-                #     fake /= fake.max()
-                #     fake *= 255
-                #     fake = fake.astype(np.uint8)
-                #     Image.fromarray(fake, 'RGB').save(f"fake_loss_{idx}.png")
-                #     real -= real.min()
-                #     real /= real.max()
-                #     real *= 255
-                #     real = real.astype(np.uint8)
-                #     Image.fromarray(real, 'RGB').save(f"real_loss_{idx}.png")
-                # diff = out[0] - out[1]
-                # minmax = (diff.min(), diff.max())
+                #### TEST ####
+                # if cur_nimg == sched.minibatch_size or cur_nimg % 2048 == 0:
+                #     from PIL import Image
+                #     reals = np.transpose(reals, [0, 2, 3, 1])
+                #     fakes = np.transpose(fakes, [0, 2, 3, 1])
+                #     diff = np.abs(reals - fakes)
+                #     print(diff.min(), diff.max())
+                #     for idx, (fake, real) in enumerate(zip(fakes, reals)):
+                #         fake -= fake.min()
+                #         fake /= fake.max()
+                #         fake *= 255
+                #         fake = fake.astype(np.uint8)
+                #         Image.fromarray(fake, 'RGB').save(f"fake_loss_{idx}.png")
+                #         real -= real.min()
+                #         real /= real.max()
+                #         real *= 255
+                #         real = real.astype(np.uint8)
+                #         Image.fromarray(real, 'RGB').save(f"real_loss_{idx}.png")
+                ####
                 if run_G_reg:
                     tflib.run(G_reg_op, feed_dict)
                 tflib.run([Gs_update_op], feed_dict)
@@ -357,12 +367,12 @@ def training_loop_refinement(
             tick_loss = loss_per_batch_sum * sched.minibatch_size / (tick_kimg * 1000); loss_per_batch_sum = 0
 
             # Report progress.
-            print('tick %-5d kimg %-8.1f lod %-5.2f minibatch %-4d loss/img %-8.4f time %-12s sec/tick %-7.1f sec/kimg %-7.2f maintenance %-6.1f gpumem %.1f' % (
+            print('tick %-5d kimg %-8.1f lod %-5.2f minibatch %-4d loss/px %-12.8f time %-12s sec/tick %-7.1f sec/kimg %-7.2f maintenance %-6.1f gpumem %.1f' % (
                 autosummary('Progress/tick', cur_tick),
                 autosummary('Progress/kimg', cur_nimg / 1000.0),
                 autosummary('Progress/lod', sched.lod),
                 autosummary('Progress/minibatch', sched.minibatch_size),
-                tick_loss,
+                autosummary('Progress/loss_per_px', tick_loss),
                 dnnlib.util.format_time(autosummary('Timing/total_sec', total_time)),
                 autosummary('Timing/sec_per_tick', tick_time),
                 autosummary('Timing/sec_per_kimg', tick_time / tick_kimg),
